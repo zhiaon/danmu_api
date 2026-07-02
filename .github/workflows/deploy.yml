@@ -1,0 +1,112 @@
+name: Deploy danmu-api to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * *'  # 每天凌晨自动检查上游更新
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync upstream & checkout
+        run: |
+          git clone https://github.com/${{ github.repository }}.git repo
+          cd repo
+          git remote add upstream https://github.com/huangxd-/danmu_api.git
+          git fetch upstream main
+          git merge upstream/main --no-edit || true
+          git push origin main
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install & Bundle
+        run: |
+          cd repo
+          npm install
+
+          # Create shims
+          cat > fs-shim.js << 'EOF'
+          export default {};
+          export const existsSync = () => false;
+          export const readFileSync = () => '';
+          export const writeFileSync = () => {};
+          export const mkdirSync = () => {};
+          export const readdirSync = () => [];
+          export const unlinkSync = () => {};
+          export const statSync = () => ({});
+          EOF
+
+          cat > path-shim.js << 'EOF'
+          function join(...args) { return args.join('/'); }
+          function resolve(...args) { return args.join('/'); }
+          function dirname(p) { return p.split('/').slice(0, -1).join('/'); }
+          function basename(p) { return p.split('/').pop(); }
+          function extname(p) { const parts = p.split('.'); return parts.length > 1 ? '.' + parts.pop() : ''; }
+          export default { join, resolve, dirname, basename, extname };
+          export { join, resolve, dirname, basename, extname };
+          EOF
+
+          cat > stream-shim.js << 'EOF'
+          export async function pipeline() {}
+          EOF
+
+          cat > node-fetch-shim.js << 'EOF'
+          export default globalThis.fetch;
+          export const Headers = globalThis.Headers;
+          export const Request = globalThis.Request;
+          export const Response = globalThis.Response;
+          EOF
+
+          cat > proxy-shim.js << 'EOF'
+          export class HttpsProxyAgent { constructor() {} }
+          export default HttpsProxyAgent;
+          EOF
+
+          cat > process-polyfill.js << 'EOF'
+          if (typeof globalThis.process === 'undefined') {
+            globalThis.process = { env: {}, cwd: () => '/', memoryUsage: () => ({heapUsed:0,rss:0,heapTotal:0,external:0,arrayBuffers:0}), version: 'v18.0.0', platform: 'cloudflare', nextTick: (fn, ...args) => queueMicrotask(() => fn(...args)) };
+          } else {
+            if (!globalThis.process.cwd) globalThis.process.cwd = () => '/';
+            if (!globalThis.process.memoryUsage) globalThis.process.memoryUsage = () => ({heapUsed:0,rss:0,heapTotal:0,external:0,arrayBuffers:0});
+          }
+          EOF
+
+          npx esbuild danmu_api/worker.js \
+            --bundle --format=esm --platform=neutral --target=es2022 \
+            --outfile=worker-bundle.js \
+            --define:globalThis.IS_CLOUDFLARE_WORKER=true \
+            --banner:js="$(cat process-polyfill.js)" \
+            --external:pako --external:redis --external:chokidar --external:dotenv --external:esbuild \
+            --external:node:async_hooks --external:node:buffer --external:node:stream --external:node:util \
+            --external:node:crypto --external:node:url --external:node:events --external:node:http \
+            --external:node:https --external:node:tls --external:node:net --external:node:zlib \
+            --external:node:querystring --external:node:fs --external:node:path --external:node:os \
+            --external:node:child_process \
+            --external:fs --external:path --external:stream/promises \
+            --alias:fs=./fs-shim.js --alias:path=./path-shim.js \
+            --alias:stream/promises=./stream-shim.js \
+            --alias:node-fetch=./node-fetch-shim.js \
+            --alias:https-proxy-agent=./proxy-shim.js
+
+      - name: Deploy to Cloudflare Workers
+        run: |
+          cd repo
+          curl -s -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/workers/scripts/danmu-api" \
+            -H "X-Auth-Email: ${{ secrets.CF_EMAIL }}" \
+            -H "X-Auth-Key: ${{ secrets.CF_API_KEY }}" \
+            -F 'metadata={"main_module":"worker.js","compatibility_date":"2025-09-13","compatibility_flags":["nodejs_compat"]}' \
+            -F 'worker.js=@worker-bundle.js;type=application/javascript+module' \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print('Deploy:', 'SUCCESS' if d.get('success') else d.get('errors'))"
