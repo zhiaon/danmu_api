@@ -4,16 +4,16 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '0 0 * * *'  # 每天凌晨自动检查上游更新
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync upstream & checkout
+      - name: Sync upstream
         run: |
-          git clone https://github.com/${{ github.repository }}.git repo
+          git clone https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git repo
           cd repo
           git remote add upstream https://github.com/huangxd-/danmu_api.git
           git fetch upstream main
@@ -24,7 +24,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,10 +32,8 @@ jobs:
 
       - name: Install & Bundle
         run: |
-          cd repo
           npm install
 
-          # Create shims
           cat > fs-shim.js << 'EOF'
           export default {};
           export const existsSync = () => false;
@@ -102,7 +99,6 @@ jobs:
 
       - name: Deploy to Cloudflare Workers
         run: |
-          cd repo
           curl -s -X PUT \
             "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/workers/scripts/danmu-api" \
             -H "X-Auth-Email: ${{ secrets.CF_EMAIL }}" \
