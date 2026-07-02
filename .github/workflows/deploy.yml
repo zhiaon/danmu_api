@@ -1,4 +1,4 @@
-name: Deploy danmu-api to Cloudflare Workers
+name: Deploy danmu-api (CF Workers + Vercel)
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install & Bundle
+      - name: Install & Bundle (CF Workers)
         run: |
           npm install
 
@@ -108,4 +108,15 @@ jobs:
             -H "X-Auth-Key: ${{ secrets.CF_API_KEY }}" \
             -F 'metadata={"main_module":"worker.js","compatibility_date":"2025-09-13","compatibility_flags":["nodejs_compat"]}' \
             -F 'worker.js=@worker-bundle.js;type=application/javascript+module' \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print('Deploy:', 'SUCCESS' if d.get('success') else d.get('errors'))"
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print('CF Workers:', 'SUCCESS' if d.get('success') else d.get('errors'))"
+
+      - name: Deploy to Vercel
+        run: |
+          npx vercel --prod --yes \
+            --token="${{ secrets.VERCEL_TOKEN }}" \
+            --scope="team_NmpbtmL8oiSku2kW87S6NMzD" \
+            --name="danmu-api" \
+            2>&1 | tail -5
+        env:
+          VERCEL_ORG_ID: "team_NmpbtmL8oiSku2kW87S6NMzD"
+          VERCEL_PROJECT_ID: "prj_iM7dI668OSyCgW1hKHGzApohxcF9"
